@@ -33,16 +33,16 @@ function checkOnboarding() {
         "BITGET_PASSPHRASE=",
         "",
         "# Trading config",
-        "PORTFOLIO_VALUE_USD=1000",
-        "MAX_TRADE_SIZE_USD=100",
-        "MAX_TRADES_PER_DAY=3",
+        "PORTFOLIO_VALUE_USD=500",
+        "MAX_TRADE_SIZE_USD=99",
+        "MAX_TRADES_PER_DAY=6",
         "PAPER_TRADING=true",
         "SYMBOL=BTCUSDT",
         "TIMEFRAME=4H",
       ].join("\n") + "\n",
     );
     try {
-      execSync("open .env");
+      console.log("Please set credentials as Railway environment variables.");
     } catch {}
     console.log(
       "Fill in your BitGet credentials in .env then re-run: node bot.js\n",
@@ -54,7 +54,7 @@ function checkOnboarding() {
     console.log(`\n⚠️  Missing credentials in .env: ${missing.join(", ")}`);
     console.log("Opening .env for you now...\n");
     try {
-      execSync("open .env");
+      console.log("Please set credentials as Railway environment variables.");
     } catch {}
     console.log("Add the missing values then re-run: node bot.js\n");
     process.exit(0);
@@ -74,9 +74,9 @@ function checkOnboarding() {
 const CONFIG = {
   symbol: process.env.SYMBOL || "BTCUSDT",
   timeframe: process.env.TIMEFRAME || "4H",
-  portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "1000"),
-  maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "100"),
-  maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "3"),
+  portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "500"),
+  maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "99"),
+  maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "6"),
   paperTrading: process.env.PAPER_TRADING !== "false",
   tradeMode: process.env.TRADE_MODE || "spot",
   bitget: {
