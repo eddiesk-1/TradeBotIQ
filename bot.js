@@ -20,7 +20,7 @@ function checkOnboarding() {
   const required = ["BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE"];
   const missing = required.filter((k) => !process.env[k]);
 
-  if (!existsSync(".env")) {
+  if (!existsSync(".env") && !process.env.BITGET_API_KEY) {
     console.log(
       "\n⚠️  No .env file found — opening it for you to fill in...\n",
     );
