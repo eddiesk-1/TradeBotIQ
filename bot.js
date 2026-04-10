@@ -38,7 +38,7 @@ function checkOnboarding() {
         "MAX_TRADES_PER_DAY=31",
         "PAPER_TRADING=true",
         "SYMBOL=BTCUSDT",
-        "TIMEFRAME=4H",
+        "TIMEFRAME=2H",
       ].join("\n") + "\n",
     );
     try {
@@ -73,7 +73,7 @@ function checkOnboarding() {
 
 const CONFIG = {
   symbol: process.env.SYMBOL || "BTCUSDT",
-  timeframe: process.env.TIMEFRAME || "4H",
+  timeframe: process.env.TIMEFRAME || "2H",
   portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "500"),
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD || "35"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "31"),
@@ -195,6 +195,7 @@ async function fetchCandles(symbol, interval, limit = 100) {
     "15m": "15m",
     "30m": "30m",
     "1H": "1h",
+    "2H": "2h",
     "3H": "3h",
     "4H": "4h",
     "1D": "1d",
