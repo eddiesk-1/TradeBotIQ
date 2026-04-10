@@ -298,7 +298,7 @@ function runSafetyCheck(price, ema8, ema21, ema50, vwap, rsi3, volumeConfirmed, 
   if (volumeConfirmed) sellScore += 1;  // volume confirms move
   if (momentum < 0)    sellScore += 1;  // negative momentum
 
-  const MIN_SCORE = 7; // out of 11 — high confidence required
+  const MIN_SCORE = 6; // out of 11 — high confidence required
 
   console.log(`  Buy Score:  ${buyScore}/11`);
   console.log(`  Sell Score: ${sellScore}/11`);
