@@ -9,6 +9,7 @@
     "dev": "node bot.js"
   },
   "dependencies": {
+    "ccxt": "^4.5.48",
     "dotenv": "^16.4.5",
     "node-fetch": "^3.3.2"
   },
