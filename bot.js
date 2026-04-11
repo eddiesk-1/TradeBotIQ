@@ -3,7 +3,7 @@
  *
  * Cloud mode: runs on Railway on a schedule. Pulls candle data direct from
  * Binance (free, no auth), calculates all indicators, runs safety check,
- * executes via BitGet if everything lines up.
+ * executes via Binance if everything lines up.
  *
  * Local mode: run manually — node bot.js
  * Cloud mode: deploy to Railway, set env vars, Railway triggers on cron schedule
@@ -17,20 +17,19 @@ import { execSync } from "child_process";
 // ─── Onboarding ───────────────────────────────────────────────────────────────
 
 function checkOnboarding() {
-  const required = ["BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE"];
+  const required = ["BINANCE_API_KEY"];
   const missing = required.filter((k) => !process.env[k]);
 
-  if (!existsSync(".env") && !process.env.BITGET_API_KEY) {
+  if (!existsSync(".env") && !process.env.BINANCE_API_KEY) {
     console.log(
       "\n⚠️  No .env file found — opening it for you to fill in...\n",
     );
     writeFileSync(
       ".env",
       [
-        "# BitGet credentials",
-        "BITGET_API_KEY=",
-        "BITGET_SECRET_KEY=",
-        "BITGET_PASSPHRASE=",
+        "# Binance credentials",
+        "BINANCE_API_KEY=",
+        "BINANCE_PRIVATE_KEY_PATH=/app/private_key.pem",
         "",
         "# Trading config",
         "PORTFOLIO_VALUE_USD=500",
@@ -45,7 +44,7 @@ function checkOnboarding() {
       console.log("Please set credentials as Railway environment variables.");
     } catch {}
     console.log(
-      "Fill in your BitGet credentials in .env then re-run: node bot.js\n",
+      "Fill in your Binance credentials as Railway environment variables\n",
     );
     process.exit(0);
   }
@@ -81,11 +80,10 @@ const CONFIG = {
   tradeMode: process.env.TRADE_MODE || "spot",
   takeProfitPct: parseFloat(process.env.TAKE_PROFIT_PCT || "3.5"),
   stopLossPct: parseFloat(process.env.STOP_LOSS_PCT || "1.0"),
-  bitget: {
-    apiKey: process.env.BITGET_API_KEY,
-    secretKey: process.env.BITGET_SECRET_KEY,
-    passphrase: process.env.BITGET_PASSPHRASE,
-    baseUrl: process.env.BITGET_BASE_URL || "https://api.bitget.com",
+  binance: {
+    apiKey: process.env.BINANCE_API_KEY,
+    privateKeyPath: process.env.BINANCE_PRIVATE_KEY_PATH || "/app/private_key.pem",
+    baseUrl: "https://api.binance.com",
   },
 };
 
@@ -150,7 +148,7 @@ async function checkAndClosePositions(price) {
 
       if (!CONFIG.paperTrading) {
         try {
-          await placeBitGetOrder(pos.symbol, "sell", pos.sizeUSD, price);
+          await placeBinanceOrder(pos.symbol, "sell", pos.sizeUSD, price);
           console.log(`  ✅ Sell order placed on Bitget`);
         } catch (err) {
           console.log(`  ❌ Sell order failed: ${err.message}`);
@@ -372,56 +370,46 @@ function checkTradeLimits(log) {
   return true;
 }
 
-// ─── BitGet Execution ────────────────────────────────────────────────────────
+// ─── Binance Execution ──────────────────────────────────────────────────────
 
-function signBitGet(timestamp, method, path, body = "") {
-  const message = `${timestamp}${method}${path}${body}`;
-  return crypto
-    .createHmac("sha256", CONFIG.bitget.secretKey)
-    .update(message)
-    .digest("base64");
+import { createPrivateKey, sign } from "crypto";
+
+function signBinance(queryString) {
+  const privateKeyPem = process.env.BINANCE_PRIVATE_KEY || readFileSync(CONFIG.binance.privateKeyPath, "utf8");
+  const privateKey = createPrivateKey(privateKeyPem);
+  const signature = sign(null, Buffer.from(queryString), privateKey);
+  return signature.toString("base64url");
 }
 
-async function placeBitGetOrder(symbol, side, sizeUSD, price) {
-  const quantity = (sizeUSD / price).toFixed(6);
-  const timestamp = Date.now().toString();
-  const path =
-    CONFIG.tradeMode === "spot"
-      ? "/api/v2/spot/trade/placeOrder"
-      : "/api/v2/mix/order/placeOrder";
+async function placeBinanceOrder(symbol, side, sizeUSD, price) {
+  const quantity = (sizeUSD / price).toFixed(5);
+  const timestamp = Date.now();
 
-  const body = JSON.stringify({
-    symbol,
-    side,
-    orderType: "market",
-    quantity,
-    ...(CONFIG.tradeMode === "futures" && {
-      productType: "USDT-FUTURES",
-      marginMode: "isolated",
-      marginCoin: "USDT",
-    }),
-  });
+  // Binance spot uses BTC not BTCUSDT for quantity
+  const params = [
+    `symbol=${symbol}`,
+    `side=${side.toUpperCase()}`,
+    `type=MARKET`,
+    `quantity=${quantity}`,
+    `timestamp=${timestamp}`,
+  ].join("&");
 
-  const signature = signBitGet(timestamp, "POST", path, body);
+  const signature = signBinance(params);
+  const url = `${CONFIG.binance.baseUrl}/api/v3/order?${params}&signature=${signature}`;
 
-  const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "ACCESS-KEY": CONFIG.bitget.apiKey,
-      "ACCESS-SIGN": signature,
-      "ACCESS-TIMESTAMP": timestamp,
-      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      "X-MBX-APIKEY": CONFIG.binance.apiKey,
     },
-    body,
   });
 
   const data = await res.json();
-  if (data.code !== "00000") {
-    throw new Error(`BitGet order failed: ${data.msg}`);
+  if (data.code && data.code < 0) {
+    throw new Error(`Binance order failed: ${data.msg}`);
   }
 
-  return data.data;
+  return { orderId: data.orderId, fills: data.fills };
 }
 
 // ─── Tax CSV Logging ─────────────────────────────────────────────────────────
@@ -675,7 +663,337 @@ async function run() {
         `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} BUY ${CONFIG.symbol}`,
       );
       try {
-        const order = await placeBitGetOrder(
+        const order = await placeBinanceOrder(
+          CONFIG.symbol,
+          signal.toLowerCase(),
+          tradeSize,
+          price,
+        );
+        logEntry.orderPlaced = true;
+        logEntry.orderId = order.orderId;
+        console.log(`✅ ORDER PLACED — ${order.orderId}`);
+        const livePositions = loadPositions();
+        livePositions.push({ symbol: CONFIG.symbol, entryPrice: price, sizeUSD: tradeSize, timestamp: new Date().toISOString() });
+        savePositions(livePositions);
+      } catch (err) {
+        console.log(`❌ ORDER FAILED — ${err.message}`);
+        logEntry.error = err.message;
+      }
+    }
+  }
+
+  // Save decision log
+  log.trades.push(logEntry);
+  saveLog(log);
+  console.log(`\nDecision log saved → ${LOG_FILE}`);
+
+  // Write tax CSV row for every run (executed, paper, or blocked)
+  writeTradeCsv(logEntry);
+
+  console.log("═══════════════════════════════════════════════════════════\n");
+}
+
+if (process.argv.includes("--tax-summary")) {
+  generateTaxSummary();
+} else {
+  run().catch((err) => {
+    console.error("Bot error:", err);
+    process.exit(1);
+  });
+}// ─── Binance Execution ──────────────────────────────────────────────────────
+
+import { createPrivateKey, sign } from "crypto";
+
+function signBinance(queryString) {
+  const privateKeyPem = process.env.BINANCE_PRIVATE_KEY || readFileSync(CONFIG.binance.privateKeyPath, "utf8");
+  const privateKey = createPrivateKey(privateKeyPem);
+  const signature = sign(null, Buffer.from(queryString), privateKey);
+  return signature.toString("base64url");
+}
+
+async function placeBinanceOrder(symbol, side, sizeUSD, price) {
+  const quantity = (sizeUSD / price).toFixed(5);
+  const timestamp = Date.now();
+
+  // Binance spot uses BTC not BTCUSDT for quantity
+  const params = [
+    `symbol=${symbol}`,
+    `side=${side.toUpperCase()}`,
+    `type=MARKET`,
+    `quantity=${quantity}`,
+    `timestamp=${timestamp}`,
+  ].join("&");
+
+  const signature = signBinance(params);
+  const url = `${CONFIG.binance.baseUrl}/api/v3/order?${params}&signature=${signature}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "X-MBX-APIKEY": CONFIG.binance.apiKey,
+    },
+  });
+
+  const data = await res.json();
+  if (data.code && data.code < 0) {
+    throw new Error(`Binance order failed: ${data.msg}`);
+  }
+
+  return { orderId: data.orderId, fills: data.fills };
+}
+
+// ─── Tax CSV Logging ─────────────────────────────────────────────────────────
+
+const CSV_FILE = "trades.csv";
+
+// Always ensure trades.csv exists with headers — open it in Excel/Sheets any time
+function initCsv() {
+  if (!existsSync(CSV_FILE)) {
+    const funnyNote = `,,,,,,,,,,,"NOTE","Hey, if you're at this stage of the video, you must be enjoying it... perhaps you could hit subscribe now? :)"`;
+    writeFileSync(CSV_FILE, CSV_HEADERS + "\n" + funnyNote + "\n");
+    console.log(
+      `📄 Created ${CSV_FILE} — open in Google Sheets or Excel to track trades.`,
+    );
+  }
+}
+const CSV_HEADERS = [
+  "Date",
+  "Time (UTC)",
+  "Exchange",
+  "Symbol",
+  "Side",
+  "Quantity",
+  "Price",
+  "Total USD",
+  "Fee (est.)",
+  "Net Amount",
+  "Order ID",
+  "Mode",
+  "Notes",
+].join(",");
+
+function writeTradeCsv(logEntry) {
+  const now = new Date(logEntry.timestamp);
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toISOString().slice(11, 19);
+
+  let side = "";
+  let quantity = "";
+  let totalUSD = "";
+  let fee = "";
+  let netAmount = "";
+  let orderId = "";
+  let mode = "";
+  let notes = "";
+
+  if (!logEntry.allPass) {
+    const failed = logEntry.conditions
+      .filter((c) => !c.pass)
+      .map((c) => c.label)
+      .join("; ");
+    mode = "BLOCKED";
+    orderId = "BLOCKED";
+    notes = `Failed: ${failed}`;
+  } else if (logEntry.paperTrading) {
+    side = logEntry.side || "BUY";
+    quantity = (logEntry.tradeSize / logEntry.price).toFixed(6);
+    totalUSD = logEntry.tradeSize.toFixed(2);
+    fee = (logEntry.tradeSize * 0.001).toFixed(4);
+    netAmount = (logEntry.tradeSize - parseFloat(fee)).toFixed(2);
+    orderId = logEntry.orderId || "";
+    mode = logEntry.side === "SELL" ? `PAPER-EXIT(${logEntry.exitReason})` : "PAPER";
+    notes = "All conditions met";
+  } else {
+    side = logEntry.side || "BUY";
+    quantity = (logEntry.tradeSize / logEntry.price).toFixed(6);
+    totalUSD = logEntry.tradeSize.toFixed(2);
+    fee = (logEntry.tradeSize * 0.001).toFixed(4);
+    netAmount = (logEntry.tradeSize - parseFloat(fee)).toFixed(2);
+    orderId = logEntry.orderId || "";
+    mode = logEntry.side === "SELL" ? `LIVE-EXIT(${logEntry.exitReason})` : "LIVE";
+    notes = logEntry.error ? `Error: ${logEntry.error}` : "All conditions met";
+  }
+
+  const row = [
+    date,
+    time,
+    "BitGet",
+    logEntry.symbol,
+    side,
+    quantity,
+    logEntry.price.toFixed(2),
+    totalUSD,
+    fee,
+    netAmount,
+    orderId,
+    mode,
+    `"${notes}"`,
+  ].join(",");
+
+  if (!existsSync(CSV_FILE)) {
+    writeFileSync(CSV_FILE, CSV_HEADERS + "\n");
+  }
+
+  appendFileSync(CSV_FILE, row + "\n");
+  console.log(`Tax record saved → ${CSV_FILE}`);
+}
+
+// Tax summary command: node bot.js --tax-summary
+function generateTaxSummary() {
+  if (!existsSync(CSV_FILE)) {
+    console.log("No trades.csv found — no trades have been recorded yet.");
+    return;
+  }
+
+  const lines = readFileSync(CSV_FILE, "utf8").trim().split("\n");
+  const rows = lines.slice(1).map((l) => l.split(","));
+
+  const live = rows.filter((r) => r[11] === "LIVE");
+  const paper = rows.filter((r) => r[11] === "PAPER");
+  const blocked = rows.filter((r) => r[11] === "BLOCKED");
+
+  const totalVolume = live.reduce((sum, r) => sum + parseFloat(r[7] || 0), 0);
+  const totalFees = live.reduce((sum, r) => sum + parseFloat(r[8] || 0), 0);
+
+  console.log("\n── Tax Summary ──────────────────────────────────────────\n");
+  console.log(`  Total decisions logged : ${rows.length}`);
+  console.log(`  Live trades executed   : ${live.length}`);
+  console.log(`  Paper trades           : ${paper.length}`);
+  console.log(`  Blocked by safety check: ${blocked.length}`);
+  console.log(`  Total volume (USD)     : $${totalVolume.toFixed(2)}`);
+  console.log(`  Total fees paid (est.) : $${totalFees.toFixed(4)}`);
+  console.log(`\n  Full record: ${CSV_FILE}`);
+  console.log("─────────────────────────────────────────────────────────\n");
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+async function run() {
+  checkOnboarding();
+  initCsv();
+  console.log("═══════════════════════════════════════════════════════════");
+  console.log("  Claude Trading Bot");
+  console.log(`  ${new Date().toISOString()}`);
+  console.log(
+    `  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"}`,
+  );
+  console.log("═══════════════════════════════════════════════════════════");
+
+  // Load strategy
+  const rules = JSON.parse(readFileSync("rules.json", "utf8"));
+  console.log(`\nStrategy: ${rules.strategy.name}`);
+  console.log(`Symbol: ${CONFIG.symbol} | Timeframe: ${CONFIG.timeframe}`);
+
+  // Load log and check daily limits
+  const log = loadLog();
+  const withinLimits = checkTradeLimits(log);
+  if (!withinLimits) {
+    console.log("\nBot stopping — trade limits reached for today.");
+    return;
+  }
+
+  // Fetch candle data — need enough for EMA(8) + full session for VWAP
+  console.log("\n── Fetching market data from Binance ───────────────────\n");
+  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
+  const closes = candles.map((c) => c.close);
+  const price = closes[closes.length - 1];
+  console.log(`  Current price: $${price.toFixed(2)}`);
+
+  // Calculate indicators
+  const ema8 = calcEMA(closes, 8);
+  const ema21 = calcEMA(closes, 21);
+  const ema50 = calcEMA(closes, 50);
+
+  // Volume confirmation — is current volume above 20-candle average?
+  const volumes = candles.map(c => c.volume);
+  const avgVol20 = volumes.slice(-20).reduce((a,b) => a+b, 0) / 20;
+  const currentVol = volumes[volumes.length - 1];
+  const volumeConfirmed = currentVol > avgVol20 * 1.1;
+
+  // Candle momentum — is last candle green or red?
+  const lastCandle = candles[candles.length - 1];
+  const prevCandle = candles[candles.length - 2];
+  const greenCandle = lastCandle.close > lastCandle.open;
+  const redCandle = lastCandle.close < lastCandle.open;
+  const strongGreen = greenCandle && (lastCandle.close - lastCandle.open) > (lastCandle.high - lastCandle.low) * 0.6;
+  const strongRed = redCandle && (lastCandle.open - lastCandle.close) > (lastCandle.high - lastCandle.low) * 0.6;
+
+  // Momentum — is price moving in right direction vs previous candle?
+  const momentum = lastCandle.close - prevCandle.close;
+  const vwap = calcVWAP(candles);
+  const rsi3 = calcRSI(closes, 3);
+
+  console.log(`  EMA(8):  ${ema8.toFixed(2)}`);
+  console.log(`  EMA(21): ${ema21.toFixed(2)}`);
+  console.log(`  EMA(50): ${ema50.toFixed(2)}`);
+  console.log(`  Volume:  ${currentVol.toFixed(2)} (avg: ${avgVol20.toFixed(2)}) ${volumeConfirmed ? '✅ Above avg' : '⚠️ Below avg'}`);
+  console.log(`  Candle:  ${strongGreen ? '🟢 Strong Green' : strongRed ? '🔴 Strong Red' : greenCandle ? '🟡 Weak Green' : '🟡 Weak Red'}`);
+  console.log(`  VWAP:    $${vwap ? vwap.toFixed(2) : "N/A"}`);
+  console.log(`  RSI(3):  ${rsi3 ? rsi3.toFixed(2) : "N/A"}`);
+
+  if (!vwap || !rsi3) {
+    console.log("\n⚠️  Not enough data to calculate indicators. Exiting.");
+    return;
+  }
+
+  // Check and close existing positions first
+  await checkAndClosePositions(price);
+
+  // Run safety check
+  const { results, allPass, signal } = runSafetyCheck(price, ema8, ema21, ema50, vwap, rsi3, volumeConfirmed, strongGreen, strongRed, momentum, rules);
+
+  // Calculate position size
+  const tradeSize = Math.min(
+    CONFIG.portfolioValue * 0.01,
+    CONFIG.maxTradeSizeUSD,
+  );
+
+  // Decision
+  console.log("\n── Decision ─────────────────────────────────────────────\n");
+
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    symbol: CONFIG.symbol,
+    timeframe: CONFIG.timeframe,
+    price,
+    indicators: { ema8, vwap, rsi3 },
+    conditions: results,
+    allPass,
+    tradeSize,
+    orderPlaced: false,
+    orderId: null,
+    paperTrading: CONFIG.paperTrading,
+    limits: {
+      maxTradeSizeUSD: CONFIG.maxTradeSizeUSD,
+      maxTradesPerDay: CONFIG.maxTradesPerDay,
+      tradesToday: countTodaysTrades(log),
+    },
+  };
+
+  if (!allPass) {
+    const failed = results.filter((r) => !r.pass).map((r) => r.label);
+    console.log(`🚫 TRADE BLOCKED`);
+    console.log(`   Failed conditions:`);
+    failed.forEach((f) => console.log(`   - ${f}`));
+  } else {
+    console.log(`✅ ALL CONDITIONS MET`);
+
+    if (CONFIG.paperTrading) {
+      console.log(
+        `\n📋 PAPER TRADE — would buy ${CONFIG.symbol} ~$${tradeSize.toFixed(2)} at market`,
+      );
+      console.log(`   (Set PAPER_TRADING=false in .env to place real orders)`);
+      logEntry.orderPlaced = true;
+      logEntry.orderId = `PAPER-${Date.now()}`;
+      const paperPositions = loadPositions();
+      paperPositions.push({ symbol: CONFIG.symbol, entryPrice: price, sizeUSD: tradeSize, timestamp: new Date().toISOString() });
+      savePositions(paperPositions);
+    } else {
+      console.log(
+        `\n🔴 PLACING LIVE ORDER — $${tradeSize.toFixed(2)} BUY ${CONFIG.symbol}`,
+      );
+      try {
+        const order = await placeBinanceOrder(
           CONFIG.symbol,
           signal.toLowerCase(),
           tradeSize,
