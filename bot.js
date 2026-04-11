@@ -80,10 +80,15 @@ const CONFIG = {
   tradeMode: process.env.TRADE_MODE || "spot",
   takeProfitPct: parseFloat(process.env.TAKE_PROFIT_PCT || "3.5"),
   stopLossPct: parseFloat(process.env.STOP_LOSS_PCT || "1.0"),
+  tradingAccount: process.env.TRADING_ACCOUNT || "demo",
   binance: {
-    apiKey: process.env.BINANCE_API_KEY,
+    apiKey: process.env.TRADING_ACCOUNT === "live"
+      ? process.env.BINANCE_API_KEY
+      : process.env.BINANCE_DEMO_API_KEY,
     privateKeyPath: process.env.BINANCE_PRIVATE_KEY_PATH || "/app/private_key.pem",
-    baseUrl: "https://api.binance.com",
+    baseUrl: process.env.TRADING_ACCOUNT === "live"
+      ? "https://api.binance.com"
+      : "https://testnet.binance.vision",
   },
 };
 
@@ -544,7 +549,7 @@ async function run() {
   console.log("  Claude Trading Bot");
   console.log(`  ${new Date().toISOString()}`);
   console.log(
-    `  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"}`,
+    `  Mode: ${CONFIG.paperTrading ? "📋 PAPER TRADING" : "🔴 LIVE TRADING"} | Account: ${CONFIG.tradingAccount.toUpperCase()}`,
   );
   console.log("═══════════════════════════════════════════════════════════");
 
