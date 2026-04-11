@@ -7,7 +7,7 @@
 import "dotenv/config";
 import ccxt from "ccxt";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
-import cron from "node-cron";
+
 import crypto from "crypto";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -16,7 +16,7 @@ const PAPER_TRADING = true; // Keep true until you are ready
 
 const CONFIG = {
   symbol: process.env.SYMBOL || "BTC/USDT",
-  timeframe: process.env.TIMEFRAME || "2h",
+  timeframe: (process.env.TIMEFRAME || '2H').toLowerCase(),
   portfolioValue: parseFloat(process.env.PORTFOLIO_VALUE_USD || "500"),
   maxTradeSize: parseFloat(process.env.MAX_TRADE_SIZE_USD || "35"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY || "31"),
@@ -208,4 +208,4 @@ async function run() {
 
 // Run immediately + every hour
 run().catch(err => console.error("Bot error:", err.message));
-cron.schedule('0 * * * *', run);  // every hour
+  // every hour
