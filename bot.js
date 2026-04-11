@@ -275,62 +275,89 @@ function runSafetyCheck(price, ema8, ema21, ema50, vwap, rsi3, volumeConfirmed, 
     console.log(`     Required: ${required} | Actual: ${actual}`);
   };
 
+  // ── Pre-calculate all conditions ──
+  const emaStackBull  = ema8 > ema21 && ema21 > ema50 && price > ema8;
+  const emaStackBear  = ema8 < ema21 && ema21 < ema50 && price < ema8;
+  const aboveVWAP     = price > vwap;
+  const belowVWAP     = price < vwap;
+  const aboveEMA8     = price > ema8;
+  const belowEMA8     = price < ema8;
+  const rsiOversold   = rsi3 < 30;
+  const rsiExtreme    = rsi3 < 20;
+  const rsiOverbought = rsi3 > 70;
+  const rsiExtremeBear= rsi3 > 80;
+  const posMomentum   = momentum > 0;
+  const negMomentum   = momentum < 0;
+
+  // ══════════════════════════════════════════════════
+  // BUY CONDITION SETS — any one passing = BUY signal
+  // ══════════════════════════════════════════════════
+
+  // Set A — Classic Snap-back (high confidence, volume required)
+  const setA_buy = emaStackBull && aboveVWAP && rsiOversold && volumeConfirmed;
+
+  // Set B — Momentum Breakout (strong candle + trend confirmation)
+  const setB_buy = emaStackBull && aboveVWAP && strongGreen && posMomentum && aboveEMA8;
+
+  // Set C — Extreme Oversold Bounce (RSI<20, no volume needed)
+  const setC_buy = rsiExtreme && aboveEMA8 && posMomentum && emaStackBull;
+
+  // ══════════════════════════════════════════════════
+  // SELL CONDITION SETS — any one passing = SELL signal
+  // ══════════════════════════════════════════════════
+
+  // Set D — Classic Reversal (high confidence, volume required)
+  const setD_sell = emaStackBear && belowVWAP && rsiOverbought && volumeConfirmed;
+
+  // Set E — Momentum Breakdown (strong red + trend confirmation)
+  const setE_sell = emaStackBear && belowVWAP && strongRed && negMomentum && belowEMA8;
+
+  // Set F — Extreme Overbought Reversal (RSI>80, no volume needed)
+  const setF_sell = rsiExtremeBear && belowEMA8 && negMomentum && emaStackBear;
+
+  const buySignal  = setA_buy  || setB_buy  || setC_buy;
+  const sellSignal = setD_sell || setE_sell || setF_sell;
+
+  console.log("\n── Condition Sets ───────────────────────────────────────\n");
+
+  console.log("  BUY SETS:");
+  console.log(`  Set A (Snap-back + Volume):     ${setA_buy  ? "✅ PASS" : "🚫 fail"} | EMA✓:${emaStackBull} VWAP✓:${aboveVWAP} RSI<30:${rsiOversold} Vol✓:${volumeConfirmed}`);
+  console.log(`  Set B (Momentum Breakout):      ${setB_buy  ? "✅ PASS" : "🚫 fail"} | EMA✓:${emaStackBull} VWAP✓:${aboveVWAP} StrongGreen:${strongGreen} Mom+:${posMomentum}`);
+  console.log(`  Set C (Extreme Oversold):       ${setC_buy  ? "✅ PASS" : "🚫 fail"} | RSI<20:${rsiExtreme} EMA8✓:${aboveEMA8} Mom+:${posMomentum} EMAstack:${emaStackBull}`);
+
+  console.log("\n  SELL SETS:");
+  console.log(`  Set D (Reversal + Volume):      ${setD_sell ? "✅ PASS" : "🚫 fail"} | EMA✗:${emaStackBear} VWAP✗:${belowVWAP} RSI>70:${rsiOverbought} Vol✓:${volumeConfirmed}`);
+  console.log(`  Set E (Momentum Breakdown):     ${setE_sell ? "✅ PASS" : "🚫 fail"} | EMA✗:${emaStackBear} VWAP✗:${belowVWAP} StrongRed:${strongRed} Mom-:${negMomentum}`);
+  console.log(`  Set F (Extreme Overbought):     ${setF_sell ? "✅ PASS" : "🚫 fail"} | RSI>80:${rsiExtremeBear} EMA8✗:${belowEMA8} Mom-:${negMomentum} EMAstack:${emaStackBear}`);
+
   console.log("\n── Decision Engine ──────────────────────────────────────\n");
 
-  // ── Trend Detection (3 EMAs must agree) ──
-  const strongUptrend  = ema8 > ema21 && ema21 > ema50 && price > ema8;
-  const strongDowntrend = ema8 < ema21 && ema21 < ema50 && price < ema8;
-  const aboveVWAP = price > vwap;
-  const belowVWAP = price < vwap;
-
-  // ── Scoring system — more factors = higher confidence ──
-  let buyScore  = 0;
-  let sellScore = 0;
-
-  if (strongUptrend)   buyScore  += 3;  // EMAs stacked bullish
-  if (aboveVWAP)       buyScore  += 2;  // price above VWAP
-  if (rsi3 < 30)       buyScore  += 3;  // RSI oversold snap-back
-  if (strongGreen)     buyScore  += 1;  // strong green candle
-  if (volumeConfirmed) buyScore  += 1;  // volume confirms move
-  if (momentum > 0)    buyScore  += 1;  // positive momentum
-
-  if (strongDowntrend) sellScore += 3;  // EMAs stacked bearish
-  if (belowVWAP)       sellScore += 2;  // price below VWAP
-  if (rsi3 > 70)       sellScore += 3;  // RSI overbought snap-back
-  if (strongRed)       sellScore += 1;  // strong red candle
-  if (volumeConfirmed) sellScore += 1;  // volume confirms move
-  if (momentum < 0)    sellScore += 1;  // negative momentum
-
-  const MIN_SCORE = 6; // out of 11 — high confidence required
-
-  console.log(`  Buy Score:  ${buyScore}/11`);
-  console.log(`  Sell Score: ${sellScore}/11`);
-  console.log(`  Min Required: ${MIN_SCORE}/11\n`);
-
-  if (buyScore >= MIN_SCORE && buyScore > sellScore) {
+  if (buySignal && !sellSignal) {
     signal = "BUY";
-    console.log("  Bias: STRONG BUY SIGNAL 🟢\n");
-    check("EMA stack bullish (8 > 21 > 50)", "true", String(strongUptrend), strongUptrend);
+    const setName = setA_buy ? "A — Classic Snap-back" : setB_buy ? "B — Momentum Breakout" : "C — Extreme Oversold";
+    console.log(`  Bias: STRONG BUY SIGNAL 🟢 (Set ${setName})\n`);
+    check("EMA stack bullish (8 > 21 > 50)", "true", String(emaStackBull), emaStackBull);
     check("Price above VWAP", `> ${vwap.toFixed(2)}`, price.toFixed(2), aboveVWAP);
-    check("RSI(3) oversold snap-back", "< 30", rsi3.toFixed(2), rsi3 < 30);
-    check("Volume above 20-bar average", "> avg x1.1", volumeConfirmed ? "Yes" : "No", volumeConfirmed);
-    check("Positive momentum", "> 0", momentum.toFixed(2), momentum > 0);
+    check("RSI(3) oversold", "< 30", rsi3.toFixed(2), rsiOversold);
+    check("Positive momentum", "> 0", momentum.toFixed(2), posMomentum);
     check("Strong green candle", "true", String(strongGreen), strongGreen);
+    check("Volume confirmed", "yes", volumeConfirmed ? "Yes" : "No", volumeConfirmed);
 
-  } else if (sellScore >= MIN_SCORE && sellScore > buyScore) {
+  } else if (sellSignal && !buySignal) {
     signal = "SELL";
-    console.log("  Bias: STRONG SELL SIGNAL 🔴\n");
-    check("EMA stack bearish (8 < 21 < 50)", "true", String(strongDowntrend), strongDowntrend);
+    const setName = setD_sell ? "D — Classic Reversal" : setE_sell ? "E — Momentum Breakdown" : "F — Extreme Overbought";
+    console.log(`  Bias: STRONG SELL SIGNAL 🔴 (Set ${setName})\n`);
+    check("EMA stack bearish (8 < 21 < 50)", "true", String(emaStackBear), emaStackBear);
     check("Price below VWAP", `< ${vwap.toFixed(2)}`, price.toFixed(2), belowVWAP);
-    check("RSI(3) overbought snap-back", "> 70", rsi3.toFixed(2), rsi3 > 70);
-    check("Volume above 20-bar average", "> avg x1.1", volumeConfirmed ? "Yes" : "No", volumeConfirmed);
-    check("Negative momentum", "< 0", momentum.toFixed(2), momentum < 0);
+    check("RSI(3) overbought", "> 70", rsi3.toFixed(2), rsiOverbought);
+    check("Negative momentum", "< 0", momentum.toFixed(2), negMomentum);
     check("Strong red candle", "true", String(strongRed), strongRed);
+    check("Volume confirmed", "yes", volumeConfirmed ? "Yes" : "No", volumeConfirmed);
 
   } else {
     signal = null;
-    console.log(`  Bias: NEUTRAL — score too low (Buy:${buyScore} Sell:${sellScore} Min:${MIN_SCORE}). No trade.\n`);
-    results.push({ label: "Minimum confidence score", required: `>= ${MIN_SCORE}`, actual: `B:${buyScore} S:${sellScore}`, pass: false });
+    console.log(`  Bias: NEUTRAL — no condition set passed. No trade.\n`);
+    results.push({ label: "No condition set passed", required: "Any set A-F", actual: "All failed", pass: false });
   }
 
   const allPass = results.length > 0 && results.every(r => r.pass);
