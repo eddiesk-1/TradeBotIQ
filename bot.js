@@ -184,7 +184,7 @@ async function checkAndClosePositions(price) {
 
 // ─── Market Data (Binance public API — free, no auth) ───────────────────────
 
-async function fetchCandles(symbol, interval, limit = 100) {
+async function fetchCandles(symbol, interval, limit = 500) {
   // Map our timeframe format to Binance interval format
   const intervalMap = {
     "1m": "1m",
@@ -564,7 +564,7 @@ async function run() {
 
   // Fetch candle data — need enough for EMA(8) + full session for VWAP
   console.log("\n── Fetching market data from Binance ───────────────────\n");
-  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
+  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 1000);
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];
   console.log(`  Current price: $${price.toFixed(2)}`);
@@ -894,7 +894,7 @@ async function run() {
 
   // Fetch candle data — need enough for EMA(8) + full session for VWAP
   console.log("\n── Fetching market data from Binance ───────────────────\n");
-  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 500);
+  const candles = await fetchCandles(CONFIG.symbol, CONFIG.timeframe, 1000);
   const closes = candles.map((c) => c.close);
   const price = closes[closes.length - 1];
   console.log(`  Current price: $${price.toFixed(2)}`);
