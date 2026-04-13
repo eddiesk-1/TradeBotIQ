@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-04-12T23:31:43.683Z",
+  "assets": [
+    {
+      "symbol": "BTCUSDT",
+      "price": 70625.32,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    },
+    {
+      "symbol": "ETHUSDT",
+      "price": 2188.33,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    },
+    {
+      "symbol": "SOLUSDT",
+      "price": 81.41,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    },
+    {
+      "symbol": "XRPUSDT",
+      "price": 1.3234,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    },
+    {
+      "symbol": "LINKUSDT",
+      "price": 8.72,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    },
+    {
+      "symbol": "PEPEUSDT",
+      "price": 0.00000346,
+      "signal": null,
+      "reasons": [
+        "🚫 No set passed — conditions not met"
+      ]
+    }
+  ]
+}

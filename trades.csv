@@ -1,3 +1,9 @@
 Date,Time (UTC),Exchange,Symbol,Side,Quantity,Price,Total USD,Fee (est.),Net Amount,Order ID,Mode,Notes
 ,,,,,,,,,,,"NOTE","Hey, if you're at this stage of the video, you must be enjoying it... perhaps you could hit subscribe now? :)"
 2026-04-10,11:02:31,BitGet,BTCUSDT,,,72001.95,,,,BLOCKED,BLOCKED,"Failed: RSI(3) oversold snap-back; Volume above 20-bar average"
+2026-04-13,02:07:08,Binance,BTCUSDT,,0.000070,71150.0000,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
+2026-04-13,02:07:09,Binance,ETHUSDT,,0.002271,2201.8200,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
+2026-04-13,02:07:10,Binance,SOLUSDT,,0.060790,82.2500,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
+2026-04-13,02:07:11,Binance,XRPUSDT,,3.757139,1.3308,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
+2026-04-13,02:07:12,Binance,LINKUSDT,,0.566251,8.8300,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
+2026-04-13,02:07:14,Binance,PEPEUSDT,,1432664.756447,0.0000034900,5.00,0.0050,5.00,BLOCKED,BLOCKED,,"No signal"
