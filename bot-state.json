@@ -1,0 +1,18 @@
+{
+  "wins": {
+    "S1": 0,
+    "S2": 0
+  },
+  "losses": {
+    "S1": 0,
+    "S2": 0
+  },
+  "totalPnL": {
+    "S1": 0,
+    "S2": 0
+  },
+  "totalFees": 0,
+  "equityCurve": [],
+  "s1PctOverride": null,
+  "s2PctOverride": null
+}
