@@ -1,4 +1,3 @@
-import fetch from "node-fetch";
 /**
  * TradeBotIQ v4.2
  * + Ed25519 signing (Binance asymmetric keys)
@@ -19,7 +18,7 @@ const PAPER_TRADING   = process.env.PAPER_TRADING !== "false";
 const IS_LIVE         = TRADING_ACCOUNT === "live" && !PAPER_TRADING;
 
 const CONFIG = {
-  assets:          ("BTCUSDT,ETHUSDT"),
+  assets:          (process.env.ASSETS || "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,LINKUSDT,PEPEUSDT").split(","),
   timeframe:       (process.env.TIMEFRAME || "1H").toLowerCase(),
   takeProfitPct:   parseFloat(process.env.TAKE_PROFIT_PCT  || "3.5"),
   stopLossPct:     parseFloat(process.env.STOP_LOSS_PCT    || "1.0"),
@@ -51,254 +50,37 @@ function createExchange() {
   });
 
   // Inject Ed25519 signing — overrides default HMAC
-  if (privateKeyPem && !CONFIG.paperTrading) {
-    ex.sign = function(path, api, method, params, headers, body) {
-      const timestamp = Date.now();
-      let queryString = Object.entries({ ...params, timestamp })
-        .map(([k, v]) => `${k}=${v}`).join("&");
+    // Improved Ed25519 signing for ccxt compatibility
+    // Improved Ed25519 signing for ccxt compatibility
+    if (privateKeyPem && !CONFIG.paperTrading) {
+      ex.sign = async function (path, api, method, params, headers, body) {
+        const timestamp = Date.now();
+        const query = { ...params, timestamp };
+        const queryString = Object.entries(query)
+          .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+          .join("&");
 
-      const privateKey = createPrivateKey({
-        key: privateKeyPem,
-        format: "pem",
-      });
-      const signature = sign(null, Buffer.from(queryString), privateKey)
-        .toString("base64url");
+        const privateKey = createPrivateKey({ key: privateKeyPem, format: "pem" });
+        const signature = sign(null, Buffer.from(queryString), privateKey).toString("base64url");
 
-      queryString += `&signature=${signature}`;
+        query.signature = signature;
+        const finalQuery = Object.entries(query)
+          .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+          .join("&");
 
-      try {
-
-      return {
-        url: `${this.urls.api.public}${path}?${queryString}`,
-        method,
-        body: "",
-        headers: {
-      } catch (e) {
-        console.log("⚠️ Signing fallback:", e.message);
-        return originalSign(path, api, method, params, headers, body);
-      }
-
-          "X-MBX-APIKEY": apiKey,
-          "Content-Type": "application/json",
-        },
+        return {
+          url: `${this.urls.api.public}${path}?${finalQuery}`,
+          method,
+          body: "",
+          headers: {
+            "X-MBX-APIKEY": apiKey,
+            "Content-Type": "application/json"
+          }
+        };
       };
-    };
-    console.log("🔐 Ed25519 signing active");
+      console.log("🔐 Ed25519 signing active (improved)");
+    }
   }
-
-  if (!IS_LIVE) ex.setSandboxMode(true);
-  return ex;
-}
-
-// ─── Files ────────────────────────────────────────────────────────────────────
-const LOG_FILE       = "safety-check-log.json";
-const POSITIONS_FILE = "positions.json";
-const CSV_FILE       = "trades.csv";
-const BRIEF_FILE     = "morning-brief.json";
-const BALANCE_FILE   = "balance-history.json";
-const STATE_FILE     = "bot-state.json";
-const CSV_HEADERS    = "Date,Time(UTC),Exchange,Symbol,Side,Qty,Price,USD,Fee,Slippage,Net,RealPnL,OrderID,Mode,Strategy,Score,ATR%,Set,Notes";
-
-function initFiles() {
-  if (!existsSync(CSV_FILE))       writeFileSync(CSV_FILE, CSV_HEADERS + "\n");
-  if (!existsSync(LOG_FILE))       writeFileSync(LOG_FILE, JSON.stringify({ trades: [] }, null, 2));
-  if (!existsSync(POSITIONS_FILE)) writeFileSync(POSITIONS_FILE, "[]");
-  if (!existsSync(BALANCE_FILE))   writeFileSync(BALANCE_FILE, JSON.stringify({ history: [], lastBalance: 0, initialBalance: 0 }, null, 2));
-  if (!existsSync(STATE_FILE))     writeFileSync(STATE_FILE, JSON.stringify({
-    wins: { S1:0, S2:0 }, losses: { S1:0, S2:0 },
-    totalPnL: { S1:0, S2:0 }, totalFees: 0,
-    equityCurve: [],
-  }, null, 2));
-}
-
-function loadLog()        { return existsSync(LOG_FILE) ? JSON.parse(readFileSync(LOG_FILE,"utf8")) : { trades:[] }; }
-function saveLog(l)       { writeFileSync(LOG_FILE, JSON.stringify(l, null, 2)); }
-function loadPositions()  { return existsSync(POSITIONS_FILE) ? JSON.parse(readFileSync(POSITIONS_FILE,"utf8")) : []; }
-function savePositions(p) { writeFileSync(POSITIONS_FILE, JSON.stringify(p, null, 2)); }
-function loadState()      { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE,"utf8")) : { wins:{S1:0,S2:0}, losses:{S1:0,S2:0}, totalPnL:{S1:0,S2:0}, totalFees:0, equityCurve:[] }; }
-function saveState(s)     { writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
-
-function loadBalanceHistory() {
-  return existsSync(BALANCE_FILE)
-    ? JSON.parse(readFileSync(BALANCE_FILE,"utf8"))
-    : { history:[], lastBalance:0, initialBalance:0 };
-}
-function saveBalance(balance) {
-  const bh = loadBalanceHistory();
-  if (!bh.initialBalance || bh.initialBalance === 0) bh.initialBalance = balance;
-  bh.history.push({ timestamp: new Date().toISOString(), balance });
-  if (bh.history.length > 200) bh.history = bh.history.slice(-200);
-  bh.lastBalance = balance;
-  writeFileSync(BALANCE_FILE, JSON.stringify(bh, null, 2));
-}
-
-function countTodaysTrades(log, symbol, strategy) {
-  const today = new Date().toISOString().slice(0,10);
-  return log.trades.filter(t =>
-    t.timestamp?.startsWith(today) && t.orderPlaced &&
-    t.symbol === symbol && t.strategy === strategy
-  ).length;
-}
-
-function fmtPrice(price) {
-  if (!price) return "0";
-  if (price < 0.0001) return price.toFixed(10);
-  if (price < 0.01)   return price.toFixed(8);
-  if (price < 1)      return price.toFixed(6);
-  return price.toFixed(4);
-}
-
-function writeCsvRow(e) {
-  const d    = new Date(e.timestamp);
-  const qty  = e.tradeSize && e.price ? (e.tradeSize / e.price).toFixed(6) : "";
-  const fee  = e.tradeSize ? (e.tradeSize * CONFIG.feeRate).toFixed(4) : "";
-  const slip = e.tradeSize ? (e.tradeSize * CONFIG.slippagePct).toFixed(4) : "";
-  const net  = e.tradeSize ? (e.tradeSize - parseFloat(fee) - parseFloat(slip)).toFixed(2) : "";
-  const mode = !e.allPass ? "BLOCKED" : e.paperTrading ? "PAPER" : IS_LIVE ? "LIVE" : "DEMO";
-  appendFileSync(CSV_FILE, [
-    d.toISOString().slice(0,10), d.toISOString().slice(11,19),
-    "Binance", e.symbol, e.side||"", qty,
-    e.price ? fmtPrice(e.price) : "",
-    e.tradeSize ? e.tradeSize.toFixed(2) : "",
-    fee, slip, net,
-    e.realPnL !== undefined ? e.realPnL.toFixed(4) : "",
-    e.orderId||"BLOCKED", mode,
-    e.strategy||"S1", e.score||0,
-    e.atrPct ? e.atrPct.toFixed(3) : "",
-    e.triggerSet||"", `"${e.notes||""}"`
-  ].join(",") + "\n");
-}
-
-// ─── Max Drawdown Guard ───────────────────────────────────────────────────────
-function checkDrawdown(balance) {
-  const bh = loadBalanceHistory();
-      try {
-
-  if (!bh.initialBalance || bh.initialBalance === 0) return { ok: true };
-  const drawdownPct = ((balance - bh.initialBalance) / bh.initialBalance) * 100;
-  const breached = drawdownPct <= -CONFIG.maxDrawdown;
-      try {
-
-  return { ok: !breached, drawdownPct, initialBalance: bh.initialBalance };
-}
-
-// ─── PnL Engine ───────────────────────────────────────────────────────────────
-function calcRealPnL(entry, exitPrice) {
-  const qty       = entry.sizeUSD / entry.entryPrice;
-  const exitTotal = qty * exitPrice;
-  const entryFee  = entry.sizeUSD * CONFIG.feeRate;
-  const exitFee   = exitTotal * CONFIG.feeRate;
-  const entrySlip = entry.sizeUSD * CONFIG.slippagePct;
-  const exitSlip  = exitTotal * CONFIG.slippagePct;
-  const gross     = exitTotal - entry.sizeUSD;
-  const costs     = entryFee + exitFee + entrySlip + exitSlip;
-      try {
-
-  return { gross, fees: entryFee + exitFee, slippage: entrySlip + exitSlip, net: gross - costs };
-}
-
-function updateStats(strategy, pnl, state) {
-  if (pnl.net > 0) state.wins[strategy] = (state.wins[strategy]||0) + 1;
-  else state.losses[strategy] = (state.losses[strategy]||0) + 1;
-  state.totalPnL[strategy]  = (state.totalPnL[strategy]||0) + pnl.net;
-  state.totalFees            = (state.totalFees||0) + pnl.fees;
-  state.equityCurve          = state.equityCurve || [];
-  state.equityCurve.push({ timestamp: new Date().toISOString(), pnl: pnl.net, strategy });
-  if (state.equityCurve.length > 500) state.equityCurve = state.equityCurve.slice(-500);
-}
-
-// ─── Self-Optimizer ───────────────────────────────────────────────────────────
-function getOptimizedAllocation(state) {
-  const wr = (s) => {
-    const t = (state.wins[s]||0) + (state.losses[s]||0);
-    return t >= 5 ? (state.wins[s]||0) / t : null;
-  };
-  const wr1 = wr("S1"), wr2 = wr("S2");
-  let s1Pct = CONFIG.s1Pct, s2Pct = CONFIG.s2Pct;
-  if (wr1 !== null) {
-    if (wr1 > 0.65) s1Pct = Math.min(s1Pct * 1.15, 40);
-    if (wr1 < 0.40) s1Pct = Math.max(s1Pct * 0.75, 10);
-  }
-  if (wr2 !== null) {
-    if (wr2 > 0.65) s2Pct = Math.min(s2Pct * 1.15, 10);
-    if (wr2 < 0.40) s2Pct = Math.max(s2Pct * 0.75, 2);
-  }
-      try {
-
-  return { s1Pct, s2Pct, wr1, wr2 };
-}
-
-// ─── Equity-Based Risk Scaling ────────────────────────────────────────────────
-function getEquityScaler(balance) {
-  const bh = loadBalanceHistory();
-  if (!bh.initialBalance || bh.initialBalance === 0) return 1.0;
-  const ratio = balance / bh.initialBalance;
-  // Growing: scale up to 1.2x | Shrinking: scale down to 0.5x
-  return Math.max(0.5, Math.min(1.2, ratio));
-}
-
-// ─── Balance Fetch ────────────────────────────────────────────────────────────
-async function fetchBalance(exchange) {
-  if (CONFIG.paperTrading) {
-    const bh = loadBalanceHistory();
-    return bh.lastBalance || 100;
-  }
-  try {
-    const bal  = await exchange.fetchBalance();
-    const usdt = bal?.USDT?.free || 0;
-    saveBalance(usdt);
-    return usdt;
-  } catch (err) {
-    console.log(`   ⚠️ Balance fetch failed: ${err.message}`);
-    return loadBalanceHistory().lastBalance || 100;
-  }
-}
-
-// ─── Order Book ───────────────────────────────────────────────────────────────
-async function fetchOrderBook(symbol, limit = 20) {
-  try {
-    const url = `https://api.binance.com/api/v3/depth?symbol=${symbol}&limit=${limit}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const data   = await res.json();
-    const bidVol = data.bids.reduce((s,b) => s + parseFloat(b[1]), 0);
-    const askVol = data.asks.reduce((s,a) => s + parseFloat(a[1]), 0);
-    const imbalance = askVol > 0 ? bidVol / askVol : 1;
-    const topBid = parseFloat(data.bids[0]?.[0] || 0);
-    const topAsk = parseFloat(data.asks[0]?.[0] || 0);
-    const spread = topAsk > 0 ? (topAsk - topBid) / topAsk * 100 : 0;
-      try {
-
-    return { bidVol, askVol, imbalance, spread, bullish: imbalance > 1.15, bearish: imbalance < 0.85 };
-  } catch { return null; }
-}
-
-// ─── 5m Confirmation ─────────────────────────────────────────────────────────
-async function get5mConfirmation(symbol) {
-  try {
-    const url  = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=20`;
-    const res  = await fetch(url);
-    if (!res.ok) return null;
-    const data   = await res.json();
-    const closes = data.map(k => parseFloat(k[4]));
-    const vols   = data.map(k => parseFloat(k[5]));
-    const last   = data[data.length-1];
-    const prev   = data[data.length-2];
-    const ema8_5m  = calcEMA(closes, 8);
-    const ema21_5m = calcEMA(closes, 21);
-    const rsi5m    = calcRSI(closes, 7);
-    const avgVol5m = vols.slice(-10).reduce((a,b)=>a+b,0) / 10;
-    const body = Math.abs(parseFloat(last[4]) - parseFloat(last[1]));
-    const wick = (parseFloat(last[2]) - parseFloat(last[3])) || 0.0001;
-      try {
-
-    return {
-      bullish: ema8_5m > ema21_5m && rsi5m < 65 && parseFloat(last[4]) > parseFloat(prev[4]),
-      bearish: ema8_5m < ema21_5m && rsi5m > 35 && parseFloat(last[4]) < parseFloat(prev[4]),
-      volSpike: vols[vols.length-1] > avgVol5m * 1.5,
-      rsi5m, strongCandle: body/wick > 0.6,
-    };
-  } catch { return null; }
 }
 
 // ─── Indicators ───────────────────────────────────────────────────────────────
@@ -325,8 +107,6 @@ function calcStochRSI(closes) {
   const recent = rv.slice(-14);
   const minR = Math.min(...recent), maxR = Math.max(...recent);
   const rawK = maxR === minR ? 50 : ((rv[rv.length-1] - minR) / (maxR - minR)) * 100;
-      try {
-
   return { k: rawK, oversold: rawK < 20, overbought: rawK > 80 };
 }
 function calcMACD(closes) {
@@ -338,8 +118,6 @@ function calcMACD(closes) {
   }
   const macdLine = mv[mv.length-1];
   const signalLine = calcEMA(mv, 9);
-      try {
-
   return { macdLine, signalLine, histogram: macdLine - signalLine };
 }
 function calcBB(closes) {
@@ -347,8 +125,6 @@ function calcBB(closes) {
   const slice = closes.slice(-20);
   const sma = slice.reduce((a,b)=>a+b,0) / 20;
   const std = Math.sqrt(slice.reduce((s,c) => s + Math.pow(c-sma,2), 0) / 20);
-      try {
-
   return { upper: sma+2*std, middle: sma, lower: sma-2*std };
 }
 function calcVWAP(candles) {
@@ -371,20 +147,14 @@ function calcCMF(candles, period = 20) {
   return sumVol ? sumMFV / sumVol : 0;
 }
 function calcRSIDivergence(closes, period = 14, lookback = 5) {
-      try {
-
   if (closes.length < period + lookback + 2) return { bullish: false, bearish: false };
   const rsiNow  = calcRSI(closes, period);
   const rsiPrev = calcRSI(closes.slice(0, -lookback), period);
   const pNow    = closes[closes.length-1];
   const pPrev   = closes[closes.length-1-lookback];
-      try {
-
   return { bullish: pNow < pPrev && rsiNow > rsiPrev, bearish: pNow > pPrev && rsiNow < rsiPrev };
 }
 function calcTDSequential(closes) {
-      try {
-
   if (closes.length < 10) return { count:0, setup:null, upCount:0, downCount:0 };
   let up = 0, dn = 0;
   for (let i = closes.length - 1; i >= 4; i--) {
@@ -392,8 +162,6 @@ function calcTDSequential(closes) {
     else if (closes[i] < closes[i-4]) { if (up === 0) dn++; else break; }
     else break;
   }
-      try {
-
   return { count: Math.max(up,dn), setup: up>=9?"SELL_9":dn>=9?"BUY_9":null, upCount:up, downCount:dn };
 }
 function calcFibLevels(closes, lookback = 50) {
@@ -402,8 +170,6 @@ function calcFibLevels(closes, lookback = 50) {
   const high = Math.max(...recent), low = Math.min(...recent);
   const range = high - low;
   const price = closes[closes.length-1];
-      try {
-
   return {
     high, low,
     fib618: high - range*0.618, fib50: high - range*0.5,
@@ -456,8 +222,6 @@ async function analyzeAsset(symbol) {
   const strongRed   = last.close < last.open && body/wick > 0.6;
   const momentum    = last.close - prev.close;
 
-      try {
-
   return {
     symbol, price, ema5, ema8, ema13, ema21, ema50, ema200,
     rsi3, rsi14, stochRSI, macdData, bb, vwap: vwapVal,
@@ -502,8 +266,8 @@ function calcAIScore(d, ob, m5, direction) {
   if (isBuy && d.fib?.nearFib618) score += 5;
 
   // ATR penalty — high volatility = lower confidence
-  if (d.atrPct > 4.0) score -= 15;
-  else if (d.atrPct > 2.5) score -= 8;
+  if (d.atrPct > 3.0) score -= 15;
+  else if (d.atrPct > 2.0) score -= 8;
   else if (d.atrPct > 1.5) score -= 3;
 
   return Math.max(0, Math.min(100, score));
@@ -575,8 +339,6 @@ function runStrategy1(d) {
   else if (sellSignal && !buySignal) { signal="SELL"; triggerSet=setG?"S1-G":setH?"S1-H":setI?"S1-I":"S1-J"; }
   if (!reasons.length) reasons.push("🚫 S1: No set passed");
 
-      try {
-
   return { signal, triggerSet, allPass:!!signal, reasons, strategy:"S1",
     details:{ setA,setB,setC,setD,setE_buy,setF_buy,setG,setH,setI,setJ,
               ribbonBull,ribbonBear,goldenZone,macdBull,macdBear,cmfBull,cmfBear } };
@@ -624,8 +386,6 @@ function runStrategy2(d) {
   if (buySignal && !sellSignal)      { signal="BUY";  triggerSet=setA2?"S2-A":setB2?"S2-B":setC2?"S2-C":setD2?"S2-D":"S2-E"; }
   else if (sellSignal && !buySignal) { signal="SELL"; triggerSet=setF2?"S2-F":setG2?"S2-G":"S2-H"; }
   if (!reasons.length) reasons.push("⚪ S2: No signal");
-
-      try {
 
   return { signal, triggerSet, allPass:!!signal, reasons, strategy:"S2",
     details:{ setA2,setB2,setC2,setD2,setE2,setF2,setG2,setH2 } };
@@ -701,12 +461,6 @@ async function placeOrder(exchange, symbol, signal, tradeSize, price, logEntry) 
       logEntry.notes = `Failed: ${err.message}`;
     }
   }
-  const existing = loadPositions().find(p => p.symbol === symbol && p.strategy === logEntry.strategy);
-  if (existing) {
-    console.log(`   ⚠️ ${logEntry.strategy} already in position — skipping`);
-    return;
-  }
-
   if (logEntry.orderPlaced && signal === "BUY") {
     const positions = loadPositions();
     positions.push({ symbol, entryPrice: price, sizeUSD: tradeSize, strategy: logEntry.strategy, timestamp: new Date().toISOString() });
@@ -809,8 +563,17 @@ async function run() {
       console.log(`\n── ${symbol} ${fmtPrice(d.price)} ─────────────────────────────────────`);
       console.log(`   Ribbon:${r1.details.ribbonBull?"📈":"📉"} Zone:${r1.details.goldenZone?"🟢":"🔴"} CMF:${d.cmf?.toFixed(3)} TD:${d.tdSeq.count}${d.tdSeq.upCount>0?"↑":"↓"} ATR:${d.atrPct?.toFixed(2)}%${d.atrPct>2?"⚠️ HIGH":""}`);
       console.log(`   RSI14:${d.rsi14?.toFixed(1)} RSI3:${d.rsi3?.toFixed(1)} MACD:${r1.details.macdBull?"🟢":"🔴"} Vol:${d.volConfirmed?"✅":"⚠️"}`);
-      if (ob) console.log(`   OB: Imb:${ob.imbalance.toFixed(3)} ${ob.bullish ? "🟢" : ob.bearish ? "🔴" : "⚪"} Spread:${ob.spread.toFixed(4)}%`);
-      if (m5) console.log(`   5m: ${m5.bullish ? "📈" : m5.bearish ? "📉" : "↔️"} RSI5m:${m5.rsi5m?.toFixed(1)} Spike:${m5.volSpike?"✅":"🚫"}`);
+      if (ob) {
+        let color = "⚪";
+        let label = "Neutral";
+        if (ob.bullish) { color = "🟢"; label = "Buy wall"; }
+        else if (ob.bearish) { color = "🔴"; label = "Sell pressure"; }
+        console.log(`   OB: Imb:${ob.imbalance.toFixed(3)} ${color} ${label} Spread:${ob.spread.toFixed(4)}%`);
+      }
+      if (m5) {
+        const m5Trend = m5.bullish ? "📈" : m5.bearish ? "📉" : "↔️";
+        console.log(`   5m: ${m5Trend} RSI5m:${m5.rsi5m?.toFixed(1)} Spike:${m5.volSpike?"✅":"🚫"}`);
+      }
       if (d.fib) console.log(`   Fib618:${fmtPrice(d.fib.fib618)} Near:${d.fib.nearFib618?"✅":"🚫"} | Div Bull:${d.rsiDiv.bullish?"✅":"🚫"} Bear:${d.rsiDiv.bearish?"✅":"🚫"}`);
 
       await checkExits(exchange, symbol, d.price, botState);
@@ -854,7 +617,7 @@ async function run() {
     } catch (err) {
       console.log(`\n── ${symbol} ❌ ${err.message}`);
     }
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 500));
   }
 
   saveLog(log);
