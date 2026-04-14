@@ -761,8 +761,8 @@ async function run() {
       console.log(`\n── ${symbol} ${fmtPrice(d.price)} ─────────────────────────────────────`);
       console.log(`   Ribbon:${r1.details.ribbonBull?"📈":"📉"} Zone:${r1.details.goldenZone?"🟢":"🔴"} CMF:${d.cmf?.toFixed(3)} TD:${d.tdSeq.count}${d.tdSeq.upCount>0?"↑":"↓"} ATR:${d.atrPct?.toFixed(2)}%${d.atrPct>2?"⚠️ HIGH":""}`);
       console.log(`   RSI14:${d.rsi14?.toFixed(1)} RSI3:${d.rsi3?.toFixed(1)} MACD:${r1.details.macdBull?"🟢":"🔴"} Vol:${d.volConfirmed?"✅":"⚠️"}`);
-      if (ob) console.log(`   OB: Imb:${ob.imbalance.toFixed(3)} ${ob.bullish?"🟢":"ob.bearish?"🔴":"⚪"} Spread:${ob.spread.toFixed(4)}%`);
-      if (m5) console.log(`   5m: ${m5.bullish?"📈":"m5.bearish?"📉":"↔️"} RSI5m:${m5.rsi5m?.toFixed(1)} Spike:${m5.volSpike?"✅":"🚫"}`);
+      if (ob) console.log(`   OB: Imb:${ob.imbalance.toFixed(3)} ${ob.bullish?"🟢":ob.bearish?"🔴":"⚪"} Spread:${ob.spread.toFixed(4)}%`);
+      if (m5) console.log(`   5m: ${m5.bullish?"📈":m5.bearish?"📉":"↔️"} RSI5m:${m5.rsi5m?.toFixed(1)} Spike:${m5.volSpike?"✅":"🚫"}`);
       if (d.fib) console.log(`   Fib618:${fmtPrice(d.fib.fib618)} Near:${d.fib.nearFib618?"✅":"🚫"} | Div Bull:${d.rsiDiv.bullish?"✅":"🚫"} Bear:${d.rsiDiv.bearish?"✅":"🚫"}`);
 
       await checkExits(exchange, symbol, d.price, botState);
