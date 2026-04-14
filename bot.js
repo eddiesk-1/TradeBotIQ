@@ -1,17 +1,15 @@
 /**
- * TradeBotIQ v4.4
- * Guide: Production-grade Binance bot architecture (Nov 2025)
- * Added: 3-tier caching, exponential backoff retry, ATR position sizing,
- *        trailing stops, max 3 positions, symbol precision, progressive
- *        rate limiting, signal deduplication
- * Kept:  Ed25519, S1/S2 dual strategy, AI scoring, drawdown guard,
- *        equity scaler, CMF, TD Sequential, Fibonacci, van de Poppe,
- *        Tone Vays methods
+ * TradeBotIQ v4.4.5 – CCXT Edition
+ * Combines v4.4 advanced features (ATR sizing, trailing stops, 3‑tier cache,
+ * signal dedup, max positions) with the reliability of ccxt for all Binance API calls.
+ * Authentication: standard HMAC (your existing BINANCE_SECRET_KEY).
+ * Ed25519 code retained but not used by default – switchable via config.
  */
 
 import "dotenv/config";
-import { createPrivateKey, sign as cryptoSign } from "crypto";
+import ccxt from "ccxt";
 import { writeFileSync, existsSync, appendFileSync, readFileSync } from "fs";
+import { createPrivateKey, sign as cryptoSign } from "crypto";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const TRADING_ACCOUNT = (process.env.TRADING_ACCOUNT || "demo").toLowerCase();
@@ -40,28 +38,55 @@ const CONFIG = {
   isLive:           IS_LIVE,
   feeRate:          0.001,
   slippagePct:      0.0005,
-  apiBase:          IS_LIVE
-                      ? "https://api.binance.com"
-                      : "https://testnet.binance.vision",
+  // Authentication method: 'hmac' (default) or 'ed25519'
+  authMethod:       process.env.AUTH_METHOD || "hmac",
 };
 
-// ─── 3-Tier Cache (guide: 70% API call reduction) ────────────────────────────
+// ─── Exchange Factory ─────────────────────────────────────────────────────────
+function createExchange() {
+  const options = {
+    apiKey: IS_LIVE ? process.env.BINANCE_API_KEY : process.env.BINANCE_DEMO_API_KEY,
+    secret: IS_LIVE ? process.env.BINANCE_SECRET_KEY : process.env.BINANCE_DEMO_SECRET_KEY,
+    enableRateLimit: true,
+    options: { defaultType: "spot", adjustForTimeDifference: true },
+  };
+
+  // If using Ed25519, we need to override the sign method.
+  // This is a simplified override – production use may require full implementation.
+  if (CONFIG.authMethod === "ed25519") {
+    const pem = process.env.BINANCE_PRIVATE_KEY;
+    if (!pem) throw new Error("BINANCE_PRIVATE_KEY required for Ed25519 auth");
+    const privateKey = createPrivateKey({ key: pem, format: "pem" });
+    options.sign = (path, api, method, params, headers, body) => {
+      const timestamp = Date.now();
+      const allParams = { ...params, timestamp };
+      const qs = Object.entries(allParams).map(([k,v]) => `${k}=${v}`).join("&");
+      const signature = cryptoSign(null, Buffer.from(qs), privateKey).toString("base64url");
+      return { "X-MBX-APIKEY": api, "signature": signature, ...allParams };
+    };
+  }
+
+  const exchange = new ccxt.binance(options);
+  if (!IS_LIVE) exchange.setSandboxMode(true);
+  return exchange;
+}
+
+// ─── 3-Tier Cache ────────────────────────────────────────────────────────────
 const CACHE = new Map();
 const CACHE_TTL = {
-  klines:   30_000,   // 30s — hot data
-  orderbook:10_000,   // 10s
-  account:  60_000,   // 60s
-  ticker:   15_000,   // 15s
-  symbols:  86_400_000, // 24h — symbol info is static
+  klines:   30_000,
+  orderbook:10_000,
+  account:  60_000,
+  ticker:   15_000,
+  symbols:  86_400_000,
 };
 
 function cacheGet(key) {
   const entry = CACHE.get(key);
   if (!entry) return null;
   if (Date.now() - entry.ts > entry.ttl) {
-    // L2: return stale data if API fails (set stale=true)
     entry.stale = true;
-    return entry; // caller decides whether to use stale
+    return entry;
   }
   return entry;
 }
@@ -70,7 +95,6 @@ function cacheSet(key, data, ttlKey) {
   CACHE.set(key, { data, ts: Date.now(), ttl: CACHE_TTL[ttlKey] || 30_000, stale: false });
 }
 
-// Cleanup cache entries older than 5 min
 function cleanCache() {
   const cutoff = Date.now() - 300_000;
   for (const [k, v] of CACHE.entries()) {
@@ -78,7 +102,7 @@ function cleanCache() {
   }
 }
 
-// ─── Progressive Rate Limiter (guide: multi-window tracking) ─────────────────
+// ─── Progressive Rate Limiter ─────────────────────────────────────────────────
 const RATE = { weight: 0, requests: 0, resetAt: Date.now() + 60_000 };
 
 async function rateDelay() {
@@ -89,7 +113,6 @@ async function rateDelay() {
   }
   RATE.weight += 10;
   RATE.requests++;
-  // Progressive throttle at 80% capacity (guide pattern)
   if (RATE.weight > 800) {
     const factor = (RATE.weight - 800) / 200;
     const delay  = Math.floor(100 + factor * 900);
@@ -97,7 +120,7 @@ async function rateDelay() {
   }
 }
 
-// ─── Retry with Exponential Backoff (guide: 5 attempts, 1s→60s) ──────────────
+// ─── Retry with Exponential Backoff ───────────────────────────────────────────
 async function withRetry(fn, attempts = 5) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
@@ -114,37 +137,7 @@ async function withRetry(fn, attempts = 5) {
   throw lastErr;
 }
 
-// ─── Ed25519 Signing ──────────────────────────────────────────────────────────
-function signEd25519(queryString) {
-  const pem = process.env.BINANCE_PRIVATE_KEY;
-  if (!pem) throw new Error("BINANCE_PRIVATE_KEY not set in Railway Variables");
-  const key = createPrivateKey({ key: pem, format: "pem" });
-  return cryptoSign(null, Buffer.from(queryString), key).toString("base64url");
-}
-
-function getApiKey() {
-  return IS_LIVE ? process.env.BINANCE_API_KEY : process.env.BINANCE_DEMO_API_KEY;
-}
-
-async function binanceRequest(method, path, params = {}) {
-  return withRetry(async () => {
-    await rateDelay();
-    const timestamp   = Date.now();
-    const allParams   = { ...params, timestamp };
-    const qs          = Object.entries(allParams).map(([k,v]) => `${k}=${v}`).join("&");
-    const signature   = signEd25519(qs);
-    const url         = `${CONFIG.apiBase}${path}?${qs}&signature=${signature}`;
-    const res         = await fetch(url, {
-      method,
-      headers: { "X-MBX-APIKEY": getApiKey(), "Content-Type": "application/json" },
-    });
-    const data = await res.json();
-    if (data.code && data.code < 0) throw new Error(`Binance ${data.code}: ${data.msg}`);
-    return data;
-  });
-}
-
-// ─── Symbol Precision (guide: prevents order rejections) ─────────────────────
+// ─── Symbol Precision ────────────────────────────────────────────────────────
 const PRECISION = {
   BTCUSDT:  { qty: 5, price: 2, minQty: 0.00001  },
   ETHUSDT:  { qty: 4, price: 2, minQty: 0.0001   },
@@ -160,21 +153,90 @@ function formatQty(symbol, qty) {
   return Math.max(rounded, p.minQty);
 }
 
-async function placeMarketOrder(symbol, side, quantity) {
-  const qty = formatQty(symbol, quantity);
-  return binanceRequest("POST", "/api/v3/order", {
-    symbol, side: side.toUpperCase(), type: "MARKET",
-    quantity: qty.toFixed(PRECISION[symbol]?.qty || 4),
+// ─── Exchange Helpers ─────────────────────────────────────────────────────────
+async function fetchAccountBalance(exchange) {
+  const cached = cacheGet("account_balance");
+  if (cached && !cached.stale) return cached.data;
+  await rateDelay();
+  const bal = await exchange.fetchBalance();
+  const usdt = bal?.USDT?.free || 0;
+  cacheSet("account_balance", usdt, "account");
+  return usdt;
+}
+
+async function fetchCandles(exchange, symbol, interval, limit = 500) {
+  const key = `klines_${symbol}_${interval}`;
+  const cached = cacheGet(key);
+  if (cached && !cached.stale) return cached.data;
+
+  return withRetry(async () => {
+    await rateDelay();
+    const ohlcv = await exchange.fetchOHLCV(symbol.replace("USDT","/USDT"), interval, undefined, limit);
+    const candles = ohlcv.map(c => ({
+      time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+    }));
+    cacheSet(key, candles, "klines");
+    return candles;
   });
 }
 
-async function fetchAccountBalance() {
-  const cached = cacheGet("account_balance");
+async function fetchOrderBook(exchange, symbol) {
+  const key = `ob_${symbol}`;
+  const cached = cacheGet(key);
   if (cached && !cached.stale) return cached.data;
-  const data = await binanceRequest("GET", "/api/v3/account", {});
-  const usdt = parseFloat(data.balances?.find(b => b.asset === "USDT")?.free || 0);
-  cacheSet("account_balance", usdt, "account");
-  return usdt;
+
+  return withRetry(async () => {
+    await rateDelay();
+    const ob = await exchange.fetchOrderBook(symbol.replace("USDT","/USDT"), 20);
+    const bidVol = ob.bids.reduce((s,b) => s + b[1], 0);
+    const askVol = ob.asks.reduce((s,a) => s + a[1], 0);
+    const imbalance = askVol > 0 ? bidVol / askVol : 1;
+    const spread = ob.asks[0]?.[0] > 0 ? (ob.asks[0][0] - ob.bids[0][0]) / ob.asks[0][0] * 100 : 0;
+    const result = {
+      bidVol, askVol, imbalance, spread,
+      bullish: imbalance > 1.15,
+      bearish: imbalance < 0.85,
+    };
+    cacheSet(key, result, "orderbook");
+    return result;
+  });
+}
+
+async function get5mConfirmation(exchange, symbol) {
+  const key = `5m_${symbol}`;
+  const cached = cacheGet(key);
+  if (cached && !cached.stale) return cached.data;
+
+  const candles = await fetchCandles(exchange, symbol, "5m", 20);
+  const closes = candles.map(c => c.close);
+  const vols = candles.map(c => c.volume);
+  const ema8 = calcEMA(closes, 8);
+  const ema21 = calcEMA(closes, 21);
+  const rsi5m = calcRSI(closes, 7);
+  const avgVol = vols.slice(-10).reduce((a,b)=>a+b,0) / 10;
+  const last = candles[candles.length-1];
+  const prev = candles[candles.length-2];
+  const body = Math.abs(last.close - last.open);
+  const wick = (last.high - last.low) || 0.0001;
+  const result = {
+    bullish:      ema8 > ema21 && rsi5m < 65 && last.close > prev.close,
+    bearish:      ema8 < ema21 && rsi5m > 35 && last.close < prev.close,
+    volSpike:     vols[vols.length-1] > avgVol * 1.5,
+    strongCandle: body/wick > 0.6,
+    rsi5m,
+  };
+  cacheSet(key, result, "klines");
+  return result;
+}
+
+async function placeMarketOrder(exchange, symbol, side, quantity) {
+  const qty = formatQty(symbol, quantity);
+  const ccxtSymbol = symbol.replace("USDT","/USDT");
+  if (side.toUpperCase() === "BUY") {
+    return exchange.createMarketBuyOrder(ccxtSymbol, qty);
+  } else {
+    return exchange.createMarketSellOrder(ccxtSymbol, qty);
+  }
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
@@ -184,7 +246,7 @@ const CSV_FILE       = "trades.csv";
 const BRIEF_FILE     = "morning-brief.json";
 const BALANCE_FILE   = "balance-history.json";
 const STATE_FILE     = "bot-state.json";
-const SIG_CACHE_FILE = "signal-cache.json"; // signal deduplication
+const SIG_CACHE_FILE = "signal-cache.json";
 const CSV_HEADERS    = "Date,Time(UTC),Exchange,Symbol,Side,Qty,Price,USD,Fee,Slippage,Net,RealPnL,OrderID,Mode,Strategy,Score,ATR%,RR,Set,Notes";
 
 function initFiles() {
@@ -255,13 +317,12 @@ function writeCsvRow(e) {
   ].join(",") + "\n");
 }
 
-// ─── Signal Deduplication (guide: prevents duplicate calculations) ────────────
+// ─── Signal Deduplication ────────────────────────────────────────────────────
 function isDuplicateSignal(symbol, strategy, signal) {
   const cache = loadSigCache();
   const key   = `${symbol}_${strategy}`;
   const entry = cache[key];
   if (!entry) return false;
-  // Same signal within 1 candle period (1h = 3600s)
   const age = (Date.now() - entry.ts) / 1000;
   return entry.signal === signal && age < 3600;
 }
@@ -317,82 +378,6 @@ function getEquityScaler(balance) {
   const bh = loadBalanceHistory();
   if (!bh.initialBalance) return 1.0;
   return Math.max(0.5, Math.min(1.2, balance / bh.initialBalance));
-}
-
-async function fetchBalance() {
-  if (CONFIG.paperTrading) { const bh = loadBalanceHistory(); return bh.lastBalance || 100; }
-  return fetchAccountBalance();
-}
-
-// ─── Market Data with Caching ─────────────────────────────────────────────────
-async function fetchCandles(symbol, interval, limit = 500) {
-  const key     = `klines_${symbol}_${interval}`;
-  const cached  = cacheGet(key);
-  if (cached && !cached.stale) return cached.data;
-
-  return withRetry(async () => {
-    await rateDelay();
-    const map  = { "1h":"1h","2h":"2h","4h":"4h","1d":"1d","5m":"5m","15m":"15m" };
-    const url  = `${CONFIG.apiBase}/api/v3/klines?symbol=${symbol}&interval=${map[interval]||"1h"}&limit=${limit}`;
-    const res  = await fetch(url);
-    if (!res.ok) throw new Error(`Candles ${symbol}: ${res.status}`);
-    const data = (await res.json()).map(k => ({
-      time: k[0], open: parseFloat(k[1]), high: parseFloat(k[2]),
-      low:  parseFloat(k[3]), close: parseFloat(k[4]), volume: parseFloat(k[5]),
-    }));
-    cacheSet(key, data, "klines");
-    return data;
-  });
-}
-
-async function fetchOrderBook(symbol) {
-  const key    = `ob_${symbol}`;
-  const cached = cacheGet(key);
-  if (cached && !cached.stale) return cached.data;
-
-  return withRetry(async () => {
-    await rateDelay();
-    const url  = `${CONFIG.apiBase}/api/v3/depth?symbol=${symbol}&limit=20`;
-    const res  = await fetch(url);
-    if (!res.ok) return null;
-    const data   = await res.json();
-    const bidVol = data.bids.reduce((s,b) => s + parseFloat(b[1]), 0);
-    const askVol = data.asks.reduce((s,a) => s + parseFloat(a[1]), 0);
-    const imb    = askVol > 0 ? bidVol / askVol : 1;
-    const topBid = parseFloat(data.bids[0]?.[0] || 0);
-    const topAsk = parseFloat(data.asks[0]?.[0] || 0);
-    const spread = topAsk > 0 ? (topAsk - topBid) / topAsk * 100 : 0;
-    const result = { bidVol, askVol, imbalance: imb, spread, bullish: imb > 1.15, bearish: imb < 0.85 };
-    cacheSet(key, result, "orderbook");
-    return result;
-  });
-}
-
-async function get5mConfirmation(symbol) {
-  const key    = `5m_${symbol}`;
-  const cached = cacheGet(key);
-  if (cached && !cached.stale) return cached.data;
-
-  const candles = await fetchCandles(symbol, "5m", 20);
-  const closes  = candles.map(c => c.close);
-  const vols    = candles.map(c => c.volume);
-  const ema8    = calcEMA(closes, 8);
-  const ema21   = calcEMA(closes, 21);
-  const rsi5m   = calcRSI(closes, 7);
-  const avgVol  = vols.slice(-10).reduce((a,b)=>a+b,0) / 10;
-  const last    = candles[candles.length-1];
-  const prev    = candles[candles.length-2];
-  const body    = Math.abs(last.close - last.open);
-  const wick    = (last.high - last.low) || 0.0001;
-  const result  = {
-    bullish:      ema8 > ema21 && rsi5m < 65 && last.close > prev.close,
-    bearish:      ema8 < ema21 && rsi5m > 35 && last.close < prev.close,
-    volSpike:     vols[vols.length-1] > avgVol * 1.5,
-    strongCandle: body/wick > 0.6,
-    rsi5m,
-  };
-  cacheSet(key, result, "klines");
-  return result;
 }
 
 // ─── Indicators ───────────────────────────────────────────────────────────────
@@ -509,14 +494,12 @@ function calcATR(candles, period = 14) {
   return trs.slice(1).reduce((a,b)=>a+b,0) / period;
 }
 
-// ─── ATR-Based Position Sizing (guide: 1% risk / price_risk) ─────────────────
+// ─── ATR-Based Position Sizing ────────────────────────────────────────────────
 function calcATRPositionSize(balance, price, atr, equityScaler) {
-  // Guide formula: risk_amount / price_risk
   const riskAmount  = balance * (CONFIG.riskPerTrade / 100) * equityScaler;
-  const stopDist    = atr * 1.5; // 1.5x ATR stop distance
+  const stopDist    = atr * 1.5;
   const priceRisk   = stopDist / price;
   const sizeByRisk  = priceRisk > 0 ? riskAmount / priceRisk : 0;
-  // Take profit = entry + stopDist * RR ratio
   const tpDistance  = stopDist * CONFIG.rrRatio;
 
   const size = Math.min(sizeByRisk, balance * 0.40, CONFIG.maxTradeUSD);
@@ -531,8 +514,8 @@ function calcATRPositionSize(balance, price, atr, equityScaler) {
 }
 
 // ─── Full Asset Analysis ──────────────────────────────────────────────────────
-async function analyzeAsset(symbol) {
-  const candles  = await fetchCandles(symbol, CONFIG.timeframe, 500);
+async function analyzeAsset(exchange, symbol) {
+  const candles  = await fetchCandles(exchange, symbol, CONFIG.timeframe, 500);
   const closes   = candles.map(c => c.close);
   const price    = closes[closes.length-1];
 
@@ -714,8 +697,8 @@ function runStrategy2(d) {
     details:{ setA2,setB2,setC2,setD2,setE2,setF2,setG2,setH2 } };
 }
 
-// ─── TP/SL + Trailing Stop (guide: activates at +1% profit) ──────────────────
-async function checkExits(symbol, price, botState) {
+// ─── TP/SL + Trailing Stop ───────────────────────────────────────────────────
+async function checkExits(exchange, symbol, price, botState) {
   const all       = loadPositions();
   const positions = all.filter(p => p.symbol === symbol);
   const others    = all.filter(p => p.symbol !== symbol);
@@ -726,12 +709,11 @@ async function checkExits(symbol, price, botState) {
     const tpPrice = pos.tpPrice  || pos.entryPrice * (1 + CONFIG.takeProfitPct/100);
     let   slPrice = pos.slPrice  || pos.entryPrice * (1 - CONFIG.stopLossPct/100);
 
-    // Trailing stop: activates once profit > threshold
     if (pnlPct >= CONFIG.trailingActivate) {
       const trailPrice = price * (1 - CONFIG.trailingStopPct/100);
       if (trailPrice > slPrice) {
         slPrice = trailPrice;
-        pos.slPrice = slPrice; // update trailing
+        pos.slPrice = slPrice;
       }
     }
 
@@ -746,7 +728,7 @@ async function checkExits(symbol, price, botState) {
 
       if (!CONFIG.paperTrading) {
         const qty = pos.sizeUSD / price;
-        await placeMarketOrder(symbol, "SELL", qty);
+        await placeMarketOrder(exchange, symbol, "SELL", qty);
       } else {
         console.log(`   📋 PAPER EXIT | Net:$${pnl.net.toFixed(3)}`);
       }
@@ -766,9 +748,8 @@ async function checkExits(symbol, price, botState) {
   savePositions([...others, ...remaining]);
 }
 
-// ─── Execute Signal (duplicate guard + precision + ATR sizing) ────────────────
-async function executeSignal(symbol, signal, sizing, price, logEntry) {
-  // Duplicate guard BEFORE order (fix 4 from v4.3)
+// ─── Execute Signal ───────────────────────────────────────────────────────────
+async function executeSignal(exchange, symbol, signal, sizing, price, logEntry) {
   const existing = loadPositions().find(
     p => p.symbol === symbol && p.strategy === logEntry.strategy
   );
@@ -777,7 +758,6 @@ async function executeSignal(symbol, signal, sizing, price, logEntry) {
     return;
   }
 
-  // Max positions guard (guide: max 3 concurrent)
   const allPositions = loadPositions();
   if (allPositions.length >= CONFIG.maxPositions) {
     console.log(`   ⚠️ Max positions reached (${allPositions.length}/${CONFIG.maxPositions}) — skipping`);
@@ -792,12 +772,12 @@ async function executeSignal(symbol, signal, sizing, price, logEntry) {
     console.log(`   📋 PAPER ${signal} $${sizing.size.toFixed(2)} @ ${fmtPrice(price)} | TP:${fmtPrice(sizing.tpPrice)} SL:${fmtPrice(sizing.stopPrice)} RR:${sizing.rr}`);
   } else {
     const qty   = sizing.size / price;
-    const order = await placeMarketOrder(symbol, signal, qty);
+    const order = await placeMarketOrder(exchange, symbol, signal, qty);
     logEntry.orderPlaced = true;
-    logEntry.orderId     = String(order.orderId);
+    logEntry.orderId     = String(order.id);
     logEntry.side        = signal;
     logEntry.notes       = `Live ${signal} Sc:${logEntry.score} RR:${sizing.rr} via ${logEntry.triggerSet}`;
-    console.log(`   ✅ LIVE ${signal} ID:${order.orderId} | RR:${sizing.rr}`);
+    console.log(`   ✅ LIVE ${signal} ID:${order.id} | RR:${sizing.rr}`);
   }
 
   if (logEntry.orderPlaced && signal === "BUY") {
@@ -814,6 +794,7 @@ async function executeSignal(symbol, signal, sizing, price, logEntry) {
 
 // ─── Morning Brief ────────────────────────────────────────────────────────────
 async function morningBrief() {
+  const exchange = createExchange();
   const botState = loadState();
   const alloc    = getOptimizedAllocation(botState);
   const bh       = loadBalanceHistory();
@@ -822,7 +803,7 @@ async function morningBrief() {
   const openPos  = loadPositions();
 
   console.log("\n╔═══════════════════════════════════════════════════════════╗");
-  console.log("║        TradeBotIQ v4.4 — MORNING BRIEF                   ║");
+  console.log("║        TradeBotIQ v4.4.5 — MORNING BRIEF                 ║");
   console.log(`║        ${new Date().toUTCString().slice(0,51).padEnd(51)}║`);
   console.log("╚═══════════════════════════════════════════════════════════╝\n");
   console.log(`  Balance:   $${balance.toFixed(2)} | DD:${dd.drawdownPct.toFixed(1)}% | ${dd.ok?"🟢 OK":"🛑 PAUSED"}`);
@@ -832,10 +813,10 @@ async function morningBrief() {
 
   for (const symbol of CONFIG.assets) {
     await new Promise(r => setTimeout(r, 1200));
-    const d  = await analyzeAsset(symbol);
+    const d  = await analyzeAsset(exchange, symbol);
     const r1 = runStrategy1(d);
     const r2 = runStrategy2(d);
-    const [ob, m5] = await Promise.all([fetchOrderBook(symbol), get5mConfirmation(symbol)]);
+    const [ob, m5] = await Promise.all([fetchOrderBook(exchange, symbol), get5mConfirmation(exchange, symbol)]);
     const sc1 = r1.signal ? calcAIScore(d, ob, m5, r1.signal) : 0;
     const sc2 = r2.signal ? calcAIScore(d, ob, m5, r2.signal) : 0;
 
@@ -860,14 +841,15 @@ async function run() {
 
   if (process.argv.includes("--brief")) { await morningBrief(); return; }
 
-  const botState     = loadState();
-  const alloc        = getOptimizedAllocation(botState);
-  const balance      = await fetchBalance();
-  const equityScaler = getEquityScaler(balance);
-  const dd           = checkDrawdown(balance);
-  const bh           = loadBalanceHistory();
-  const prevBal      = bh.history.length > 1 ? bh.history[bh.history.length-2]?.balance : balance;
-  const openPos      = loadPositions();
+  const exchange    = createExchange();
+  const botState    = loadState();
+  const alloc       = getOptimizedAllocation(botState);
+  const balance     = await fetchAccountBalance(exchange);
+  const equityScaler= getEquityScaler(balance);
+  const dd          = checkDrawdown(balance);
+  const bh          = loadBalanceHistory();
+  const prevBal     = bh.history.length > 1 ? bh.history[bh.history.length-2]?.balance : balance;
+  const openPos     = loadPositions();
 
   if (!dd.ok) {
     console.log(`\n🛑 MAX DRAWDOWN BREACHED — Bot paused`);
@@ -879,14 +861,13 @@ async function run() {
   const s2WR = alloc.wr2!==null ? `${(alloc.wr2*100).toFixed(0)}%` : "new";
 
   console.log("═══════════════════════════════════════════════════════════");
-  console.log("  TradeBotIQ v4.4 — Production Grade");
+  console.log("  TradeBotIQ v4.4.5 — CCXT + Advanced Features");
   console.log(`  ${new Date().toISOString()}`);
-  console.log(`  Mode:      ${CONFIG.paperTrading?"📋 PAPER":"🔴 LIVE"} | ${IS_LIVE?"🔴 LIVE":"🧪 DEMO"}`);
+  console.log(`  Mode:      ${CONFIG.paperTrading?"📋 PAPER":"🔴 LIVE"} | ${IS_LIVE?"🔴 LIVE":"🧪 DEMO"} | Auth: ${CONFIG.authMethod}`);
   console.log(`  Balance:   $${balance.toFixed(2)} ${(balance-prevBal)>=0?`📈+$${(balance-prevBal).toFixed(2)}`:`📉-$${Math.abs(balance-prevBal).toFixed(2)}`}`);
   console.log(`  Positions: ${openPos.length}/${CONFIG.maxPositions} | DD:${dd.drawdownPct.toFixed(1)}% 🟢`);
   console.log(`  Scale:     ${equityScaler.toFixed(2)}x | S1:${s1WR}(${alloc.s1Pct.toFixed(0)}%) S2:${s2WR}(${alloc.s2Pct.toFixed(0)}%)`);
   console.log(`  PnL:       S1:$${(botState.totalPnL?.S1||0).toFixed(2)} S2:$${(botState.totalPnL?.S2||0).toFixed(2)} Fees:$${(botState.totalFees||0).toFixed(2)}`);
-  console.log(`  Signing:   ${process.env.BINANCE_PRIVATE_KEY?"🔐 Ed25519":"⚠️ No key"} | Cache:${CACHE.size} entries`);
   console.log(`  Assets:    ${CONFIG.assets.join(", ")}`);
   console.log("═══════════════════════════════════════════════════════════");
 
@@ -897,14 +878,14 @@ async function run() {
   for (const symbol of CONFIG.assets) {
     await new Promise(r => setTimeout(r, 1500));
 
-    const d  = await analyzeAsset(symbol);
+    const d  = await analyzeAsset(exchange, symbol);
     const r1 = runStrategy1(d);
     const r2 = runStrategy2(d);
 
     await new Promise(r => setTimeout(r, 300));
-    const ob = await fetchOrderBook(symbol);
+    const ob = await fetchOrderBook(exchange, symbol);
     await new Promise(r => setTimeout(r, 300));
-    const m5 = await get5mConfirmation(symbol);
+    const m5 = await get5mConfirmation(exchange, symbol);
 
     const sc1 = r1.signal ? calcAIScore(d, ob, m5, r1.signal) : 0;
     const sc2 = r2.signal ? calcAIScore(d, ob, m5, r2.signal) : 0;
@@ -920,9 +901,8 @@ async function run() {
     console.log(`   OB:${obStr} | 5m:${m5Str} RSI5m:${m5?.rsi5m?.toFixed(1)||"N/A"}`);
     console.log(`   Fib618:${fmtPrice(d.fib.fib618)} Near:${d.fib.nearFib618?"✅":"🚫"} | Div Bull:${d.rsiDiv.bullish?"✅":"🚫"} Bear:${d.rsiDiv.bearish?"✅":"🚫"}`);
 
-    await checkExits(symbol, d.price, botState);
+    await checkExits(exchange, symbol, d.price, botState);
 
-    // ATR-based position sizing
     const sizing1 = calcATRPositionSize(balance, d.price, d.atr, equityScaler);
     const sizing2 = calcATRPositionSize(balance * (alloc.s2Pct/alloc.s1Pct), d.price, d.atr, equityScaler * 0.5);
 
@@ -931,7 +911,6 @@ async function run() {
     const s1Count = countTodaysTrades(log, symbol, "S1");
     if (r1.allPass && r1.signal && s1Count < CONFIG.maxTradesPerDay) {
       if (sc1 >= CONFIG.minScoreS1) {
-        // Signal deduplication
         if (isDuplicateSignal(symbol, "S1", r1.signal)) {
           console.log(`   ⏭️ S1 ${r1.signal} — duplicate signal within 1H, skipped`);
         } else {
@@ -944,7 +923,7 @@ async function run() {
             score: sc1, atrPct: d.atrPct, rr: sizing1.rr,
             conditions: [{ label: r1.triggerSet, pass: true }],
           };
-          await executeSignal(symbol, r1.signal, sizing1, d.price, e1);
+          await executeSignal(exchange, symbol, r1.signal, sizing1, d.price, e1);
           log.trades.push(e1);
           writeCsvRow({ ...e1, notes: e1.notes || `S1 ${r1.signal} via ${r1.triggerSet}` });
         }
@@ -972,7 +951,7 @@ async function run() {
             score: sc2, atrPct: d.atrPct, rr: sizing2.rr,
             conditions: [{ label: r2.triggerSet, pass: true }],
           };
-          await executeSignal(symbol, r2.signal, sizing2, d.price, e2);
+          await executeSignal(exchange, symbol, r2.signal, sizing2, d.price, e2);
           log.trades.push(e2);
           writeCsvRow({ ...e2, notes: e2.notes || `S2 ${r2.signal} via ${r2.triggerSet}` });
         }
@@ -990,4 +969,4 @@ async function run() {
   console.log("═══════════════════════════════════════════════════════════\n");
 }
 
-run().catch(err => { console.error("Bot error:", err.message); process.exit(1); });
+run().catch(err => { console.error("Bot error:", err.stack || err.message); process.exit(1); });
