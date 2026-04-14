@@ -1,12 +1,12 @@
 {
-  "name": "tradebotiq-v4.2",
-  "version": "4.2.0",
+  "name": "tradebotiq",
+  "version": "4.4.5",
   "type": "module",
-  "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "node-fetch": "^2.7.0"
+    "ccxt": "^4.5.48",
+    "dotenv": "^16.6.1"
   }
 }
