@@ -80,7 +80,7 @@ function createExchange() {
       };
       console.log("🔐 Ed25519 signing active (improved)");
     }
-  } catch (err) { return null; }
+  } catch (e) { return null; }
 }
 
 // ─── Indicators ───────────────────────────────────────────────────────────────
