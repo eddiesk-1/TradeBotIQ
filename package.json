@@ -1,5 +1,5 @@
 {
-  "name": "tradebotiq",
+  "name": "tradebotiq-v4.2",
   "version": "4.2.0",
   "type": "module",
   "main": "bot.js",
