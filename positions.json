@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "symbol": "ETHUSDT",
+    "entryPrice": 2366.44,
+    "sizeUSD": 2.5,
+    "strategy": "S2",
+    "timestamp": "2026-04-14T06:31:19.933Z"
+  }
+]
