@@ -1,14 +1,9 @@
 {
   "name": "tradebotiq",
-  "version": "1.0.0",
+  "version": "4.2.0",
   "type": "module",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
-  },
-  "dependencies": {
-    "ccxt": "^4.4.0",
-    "dotenv": "^16.4.5",
-    "node-cron": "^3.0.3"
   }
 }
