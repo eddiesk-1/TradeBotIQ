@@ -4,3 +4,4 @@ safety-check-log.json
 node_modules/
 private_key.pem
 private.pem
+private.pem
